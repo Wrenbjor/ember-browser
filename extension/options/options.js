@@ -4,6 +4,8 @@ const DEFAULTS = {
   model: '',
   toolsEnabled: true,
   visionEnabled: false,
+  maxToolSteps: 30,
+  contextTokens: 32768,
   mcpPort: 8765,
 };
 
@@ -16,6 +18,8 @@ async function load() {
   $('model').value = s.model;
   $('toolsEnabled').checked = s.toolsEnabled;
   $('visionEnabled').checked = s.visionEnabled;
+  $('maxToolSteps').value = s.maxToolSteps;
+  $('contextTokens').value = s.contextTokens;
   $('mcpPort').value = s.mcpPort;
 }
 
@@ -32,6 +36,8 @@ $('save').addEventListener('click', async () => {
     model: $('model').value.trim(),
     toolsEnabled: $('toolsEnabled').checked,
     visionEnabled: $('visionEnabled').checked,
+    maxToolSteps: Math.max(1, Number($('maxToolSteps').value) || 30),
+    contextTokens: Math.max(2048, Number($('contextTokens').value) || 32768),
     mcpPort: Number($('mcpPort').value) || 8765,
   });
   setStatus('Saved ✓', true);

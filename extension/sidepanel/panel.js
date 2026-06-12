@@ -8,6 +8,8 @@ const DEFAULTS = {
   model: '',
   toolsEnabled: true,
   visionEnabled: false,
+  maxToolSteps: 30,
+  contextTokens: 32768,
 };
 
 let settings = { ...DEFAULTS };
@@ -223,7 +225,7 @@ async function buildSystemPrompt() {
     /* no active tab info available */
   }
   const toolNote = settings.toolsEnabled
-    ? 'You have tools to read the page, take snapshots, click, type, scroll, and navigate. Use page_snapshot to find element refs before clicking or typing. Prefer acting over asking when the request is clear. Be economical: never repeat a tool call with the same arguments, prefer page_snapshot over screenshot, and once you have what you need, stop calling tools and answer the user.'
+    ? 'You have tools to read the page, take snapshots, click, type, scroll, and navigate. Use page_snapshot to find element refs before clicking or typing. ALWAYS click form controls (radio buttons, checkboxes, dropdowns, links, buttons) by ref from page_snapshot — never by x/y coordinates; refs cannot miss, coordinates can. Use x/y only for elements that genuinely do not appear in the snapshot. After clicking or submitting, take a fresh page_snapshot — old refs go stale. Prefer acting over asking when the request is clear. Be economical: never repeat a tool call with the same arguments, prefer page_snapshot over screenshot, and once you have what you need, stop calling tools and answer the user.'
     : 'Tool use is disabled; page text is included with the user message when available.';
   return (
     'You are Ember, a browser assistant running in a Chrome side panel with access to the user\'s current browser session. ' +
@@ -277,8 +279,84 @@ async function runTool(toolCall) {
   }
 }
 
-const MAX_TOOL_ITERATIONS = 12;
 const MAX_TOOL_RESULT_CHARS = 30000;
+
+// ---------------------------------------------------------------------------
+// Sliding-window context management
+// ---------------------------------------------------------------------------
+// Long automations would otherwise fill the model's context window. Before
+// every request we build a pruned view: old tool results get truncated, stale
+// screenshots dropped, and if still over budget, the oldest step-groups are
+// evicted — always keeping the first user message (the task itself).
+// `messages` keeps full history; pruning is per-request only.
+
+const msgSize = (m) =>
+  (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content || '').length) + 40;
+
+// Group an assistant tool_calls message with its tool replies (and any
+// injected screenshot message) so eviction never orphans half a pair.
+function groupMessages(msgs) {
+  const groups = [];
+  let i = 0;
+  while (i < msgs.length) {
+    if (msgs[i].role === 'assistant' && msgs[i].tool_calls?.length) {
+      const g = [msgs[i++]];
+      while (i < msgs.length && msgs[i].role === 'tool') g.push(msgs[i++]);
+      while (i < msgs.length && msgs[i].role === 'user' && Array.isArray(msgs[i].content)) g.push(msgs[i++]);
+      groups.push(g);
+    } else {
+      groups.push([msgs[i++]]);
+    }
+  }
+  return groups;
+}
+
+function pruneForContext(msgs, maxChars) {
+  const gsize = (g) => g.reduce((s, m) => s + msgSize(m), 0);
+  let groups = groupMessages(msgs);
+  let total = groups.reduce((s, g) => s + gsize(g), 0);
+  if (total <= maxChars) return msgs;
+
+  // Pass 1: shrink bulky tool results and drop screenshots outside the last 3 groups.
+  for (let i = 0; i < groups.length - 3 && total > maxChars; i++) {
+    groups[i] = groups[i].map((m) => {
+      if (m.role === 'tool' && typeof m.content === 'string' && m.content.length > 600) {
+        total -= m.content.length - 620;
+        return { ...m, content: m.content.slice(0, 600) + '\n…[older tool result trimmed]' };
+      }
+      if (m.role === 'user' && Array.isArray(m.content)) {
+        total -= msgSize(m) - 80;
+        return { role: 'user', content: '(an older screenshot was removed to save context)' };
+      }
+      return m;
+    });
+  }
+  if (total <= maxChars) return groups.flat();
+
+  // Pass 2: evict oldest groups, keeping the first user message (the task).
+  const firstUserIdx = groups.findIndex((g) => g[0].role === 'user');
+  const head = firstUserIdx >= 0 ? groups[firstUserIdx] : [];
+  let budget = maxChars - gsize(head) - 120;
+  const tail = [];
+  let keptFrom = groups.length;
+  for (let i = groups.length - 1; i > firstUserIdx; i--) {
+    const s = gsize(groups[i]);
+    if (budget - s < 0 && tail.length) break;
+    budget -= s;
+    tail.unshift(...groups[i]);
+    keptFrom = i;
+  }
+  const droppedGroups = keptFrom - firstUserIdx - 1;
+  const notice =
+    droppedGroups > 0
+      ? [{ role: 'user', content: `(context note: ${droppedGroups} earlier steps were removed from view to fit the context window — the original task above still applies, continue from the latest state)` }]
+      : [];
+  return [...head, ...notice, ...tail];
+}
+
+function contextBudgetChars() {
+  return (Number(settings.contextTokens) || 32768) * 3;
+}
 
 // Reasoning models (Qwen3, DeepSeek-R1, ...) return their chain of thought in
 // reasoning_content / reasoning, or inline <think> tags — sometimes with an
@@ -295,12 +373,17 @@ function extractContent(msg) {
   return { content: content.trim(), reasoning: String(reasoning).trim() };
 }
 
+// Repeating these with identical args is normal (scrolling through a long
+// page, pressing ArrowDown) — exempt from loop cutoff.
+const LOOP_EXEMPT_TOOLS = new Set(['scroll', 'press_key']);
+
 async function chatTurn() {
   const system = { role: 'system', content: await buildSystemPrompt() };
   const callCounts = new Map(); // "tool:args" -> times called this turn
+  const maxSteps = Number(settings.maxToolSteps) || 30;
 
-  for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
-    const body = { model: settings.model, messages: [system, ...messages] };
+  for (let i = 0; i < maxSteps; i++) {
+    const body = { model: settings.model, messages: [system, ...pruneForContext(messages, contextBudgetChars())] };
     if (settings.toolsEnabled) {
       body.tools = toolDefs();
       body.tool_choice = 'auto';
@@ -324,7 +407,7 @@ async function chatTurn() {
       let looping = false;
       for (const tc of msg.tool_calls) {
         const sig = `${tc.function.name}:${tc.function.arguments || ''}`;
-        const count = (callCounts.get(sig) || 0) + 1;
+        const count = LOOP_EXEMPT_TOOLS.has(tc.function.name) ? 0 : (callCounts.get(sig) || 0) + 1;
         callCounts.set(sig, count);
         if (count > 2) {
           // Same tool, same args, third time: cut it off.
@@ -340,6 +423,13 @@ async function chatTurn() {
         const result = await runTool(tc);
         messages.push({ role: 'tool', tool_call_id: tc.id, content: result.text.slice(0, MAX_TOOL_RESULT_CHARS) });
         if (result.imageDataUrl) {
+          // Only the newest screenshot stays in history — older ones are
+          // huge and describe stale page states.
+          for (let j = 0; j < messages.length; j++) {
+            if (messages[j].role === 'user' && Array.isArray(messages[j].content)) {
+              messages[j] = { role: 'user', content: '(an older screenshot was removed to save context)' };
+            }
+          }
           messages.push({
             role: 'user',
             content: [
@@ -378,7 +468,7 @@ async function finishWithoutTools(system) {
   setThinking(true);
   let msg;
   try {
-    msg = await callLLM({ model: settings.model, messages: [system, ...messages] });
+    msg = await callLLM({ model: settings.model, messages: [system, ...pruneForContext(messages, contextBudgetChars())] });
   } finally {
     setThinking(false);
   }

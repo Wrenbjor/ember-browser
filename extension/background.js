@@ -131,14 +131,43 @@ function waitForLoad(tabId, timeoutMs = 20000) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+async function normalizeScreenshot(dataUrl, viewport, format) {
+  if (!viewport?.width) return dataUrl;
+  const blob = await (await fetch(dataUrl)).blob();
+  const bitmap = await createImageBitmap(blob);
+  const scale = bitmap.width / viewport.width;
+  if (Math.abs(scale - 1) <= 0.02) return dataUrl;
+  const canvas = new OffscreenCanvas(viewport.width, viewport.height);
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, viewport.width, viewport.height);
+  const out = await canvas.convertToBlob(
+    format === 'png' ? { type: 'image/png' } : { type: 'image/jpeg', quality: 0.8 }
+  );
+  const bytes = new Uint8Array(await out.arrayBuffer());
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  return `data:${out.type};base64,${btoa(binary)}`;
+}
+
 async function handleCommand(name, args) {
   switch (name) {
     case 'screenshot': {
       const tab = await getActiveTab();
       const format = args.format === 'png' ? 'png' : 'jpeg';
       const opts = format === 'png' ? { format } : { format, quality: args.quality ?? 80 };
-      const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, opts);
-      return { dataUrl, url: tab.url, title: tab.title };
+      let dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, opts);
+      // captureVisibleTab returns physical pixels; clicks use CSS pixels.
+      // Downscale so image coordinates map 1:1 to click x/y (handles display
+      // scaling and page zoom).
+      let viewport = null;
+      try {
+        viewport = await sendToContent(tab.id, 'viewport', {});
+        dataUrl = await normalizeScreenshot(dataUrl, viewport, format);
+      } catch {
+        /* restricted page — return the raw capture */
+      }
+      return { dataUrl, url: tab.url, title: tab.title, width: viewport?.width, height: viewport?.height };
     }
 
     case 'navigate': {

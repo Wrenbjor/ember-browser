@@ -350,6 +350,8 @@
           return pressKey(msg.args);
         case 'scroll':
           return scrollPage(msg.args);
+        case 'viewport':
+          return { width: window.innerWidth, height: window.innerHeight, dpr: window.devicePixelRatio };
         case 'ping':
           return { pong: true };
         default:

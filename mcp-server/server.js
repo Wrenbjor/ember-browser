@@ -119,12 +119,13 @@ tool(
   'Take a screenshot of the visible part of the active browser tab. Returns an image.',
   { format: z.enum(['jpeg', 'png']).optional().describe('Image format, default jpeg') },
   async (args) => {
-    const { dataUrl, url, title } = await callBrowser('screenshot', args);
+    const { dataUrl, url, title, width, height } = await callBrowser('screenshot', args);
     const match = /^data:(image\/\w+);base64,(.+)$/.exec(dataUrl);
     if (!match) throw new Error('Unexpected screenshot format');
+    const dims = width ? ` — ${width}x${height}px; image pixels map 1:1 to browser_click x/y coordinates` : '';
     return {
       content: [
-        { type: 'text', text: `Screenshot of "${title}" (${url})` },
+        { type: 'text', text: `Screenshot of "${title}" (${url})${dims}` },
         { type: 'image', data: match[2], mimeType: match[1] },
       ],
     };

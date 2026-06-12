@@ -71,6 +71,14 @@
     <label class="check"><input type="checkbox" id="visionEnabled" />
       Enable vision <small>— send screenshots to the model (needs a vision model)</small></label>
 
+    <label for="maxToolSteps" style="margin-top: 10px;">Max tool steps per message</label>
+    <input type="number" id="maxToolSteps" min="1" max="200" />
+    <div class="note" style="margin: -8px 0 14px;">How many actions the model may take before being forced to answer. Raise for long unsupervised automations.</div>
+
+    <label for="contextTokens">Model context window (tokens)</label>
+    <input type="number" id="contextTokens" min="2048" />
+    <div class="note" style="margin: -8px 0 14px;">Used for sliding-window trimming on long tasks. Match your server's configured context length (e.g. Ollama's OLLAMA_CONTEXT_LENGTH) — not the model's theoretical maximum.</div>
+
     <h2>MCP bridge (Mode 1)</h2>
     <label for="mcpPort">Bridge WebSocket port</label>
     <input type="number" id="mcpPort" />
