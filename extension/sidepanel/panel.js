@@ -249,8 +249,12 @@ async function callLLM(body) {
     throw new Error(`LLM error ${res.status}: ${text.slice(0, 400)}`);
   }
   const data = await res.json();
-  const msg = data.choices?.[0]?.message;
+  const choice = data.choices?.[0];
+  const msg = choice?.message;
   if (!msg) throw new Error('LLM returned no message');
+  // finish_reason "length" means the server actually truncated; "stop" (or a
+  // tool-call reason) means the model finished on its own.
+  msg.__finishReason = choice.finish_reason || 'stop';
   return msg;
 }
 
@@ -512,16 +516,20 @@ async function chatTurn() {
       if (looping) return finishWithoutTools(system);
       continue;
     }
+    const truncated = msg.__finishReason === 'length';
     if (content) {
       addBubble('assistant', content);
+    } else if (reasoning && !truncated) {
+      // Model finished cleanly but put its whole answer in the reasoning
+      // channel with no separate final content — common with some reasoning
+      // models. It's a real answer, not a truncation; show it as one.
+      addBubble('assistant', reasoning);
     } else if (reasoning) {
-      // The model thought but never answered (usually a context-length or
-      // max-tokens limit on the server). Show the tail of its reasoning so
-      // the turn isn't lost.
-      addBubble('assistant', `*(the model ran out of room mid-thought — its last reasoning below)*\n\n${reasoning.slice(-1200)}`);
-      addBubble('error', 'Tip: this usually means the server\'s context window or max output tokens is too small. For Ollama, set OLLAMA_CONTEXT_LENGTH=32768 (or set num_ctx on the model). For LM Studio, raise the context length when loading the model.');
+      // Genuinely cut off mid-thought (server truncated by max tokens).
+      addBubble('assistant', `*(the model was cut off mid-thought — its last reasoning below)*\n\n${reasoning.slice(-1200)}`);
+      addBubble('error', 'The response hit the output-token limit. Raise max tokens on your server (e.g. vLLM --max-model-len / max_tokens, Ollama num_predict).');
     } else {
-      addBubble('error', 'The model returned an empty response. Check the server logs — this is usually a context-length limit or a template issue with tool calling.');
+      addBubble('error', 'The model returned an empty response (no content, no reasoning). Check the server logs — usually a chat-template or tool-call parsing issue.');
     }
     return;
   }
