@@ -188,7 +188,7 @@ async function buildSystemPrompt() {
     /* no active tab info available */
   }
   const toolNote = settings.toolsEnabled
-    ? 'You have tools to read the page, take snapshots, click, type, scroll, and navigate. Use page_snapshot to find element refs before clicking or typing. Prefer acting over asking when the request is clear.'
+    ? 'You have tools to read the page, take snapshots, click, type, scroll, and navigate. Use page_snapshot to find element refs before clicking or typing. Prefer acting over asking when the request is clear. Be economical: never repeat a tool call with the same arguments, prefer page_snapshot over screenshot, and once you have what you need, stop calling tools and answer the user.'
     : 'Tool use is disabled; page text is included with the user message when available.';
   return (
     'You are Ember, a browser assistant running in a Chrome side panel with access to the user\'s current browser session. ' +
@@ -242,9 +242,14 @@ async function runTool(toolCall) {
   }
 }
 
+const MAX_TOOL_ITERATIONS = 12;
+const MAX_TOOL_RESULT_CHARS = 30000;
+
 async function chatTurn() {
   const system = { role: 'system', content: await buildSystemPrompt() };
-  for (let i = 0; i < 12; i++) {
+  const callCounts = new Map(); // "tool:args" -> times called this turn
+
+  for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
     const body = { model: settings.model, messages: [system, ...messages] };
     if (settings.toolsEnabled) {
       body.tools = toolDefs();
@@ -257,12 +262,31 @@ async function chatTurn() {
     } finally {
       setThinking(false);
     }
-    messages.push(msg);
+    // Some strict servers reject null content on resend.
+    messages.push({ ...msg, content: msg.content ?? '' });
 
     if (msg.tool_calls?.length) {
+      // Show interim commentary the model produced alongside its tool calls.
+      if (msg.content) addBubble('assistant', msg.content);
+
+      let looping = false;
       for (const tc of msg.tool_calls) {
+        const sig = `${tc.function.name}:${tc.function.arguments || ''}`;
+        const count = (callCounts.get(sig) || 0) + 1;
+        callCounts.set(sig, count);
+        if (count > 2) {
+          // Same tool, same args, third time: cut it off.
+          looping = true;
+          messages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content:
+              'You already called this tool with these exact arguments — the result is above. Stop calling tools and answer the user now with what you have.',
+          });
+          continue;
+        }
         const result = await runTool(tc);
-        messages.push({ role: 'tool', tool_call_id: tc.id, content: result.text });
+        messages.push({ role: 'tool', tool_call_id: tc.id, content: result.text.slice(0, MAX_TOOL_RESULT_CHARS) });
         if (result.imageDataUrl) {
           messages.push({
             role: 'user',
@@ -273,12 +297,31 @@ async function chatTurn() {
           });
         }
       }
+      if (looping) return finishWithoutTools(system);
       continue;
     }
     if (msg.content) addBubble('assistant', msg.content);
     return;
   }
-  addBubble('error', 'Stopped after 12 tool iterations — the model may be stuck in a loop.');
+  // Iteration cap reached: force a final text answer instead of erroring.
+  return finishWithoutTools(system);
+}
+
+// One last request with tools stripped, so the model must respond in text.
+async function finishWithoutTools(system) {
+  messages.push({
+    role: 'user',
+    content: '(system: tool budget exhausted — summarize what you found and what, if anything, is still unknown)',
+  });
+  setThinking(true);
+  let msg;
+  try {
+    msg = await callLLM({ model: settings.model, messages: [system, ...messages] });
+  } finally {
+    setThinking(false);
+  }
+  messages.push({ ...msg, content: msg.content ?? '' });
+  addBubble('assistant', msg.content || '(no response)');
 }
 
 async function send() {
