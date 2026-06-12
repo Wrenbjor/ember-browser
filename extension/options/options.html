@@ -70,6 +70,8 @@
       Enable tool calling <small>— model can click, type, navigate (needs a tool-capable model)</small></label>
     <label class="check"><input type="checkbox" id="visionEnabled" />
       Enable vision <small>— send screenshots to the model (needs a vision model)</small></label>
+    <label class="check"><input type="checkbox" id="flushOnNavigate" />
+      Auto-flush stale page data <small>— compacts old tool calls after navigation, collapses superseded snapshots</small></label>
 
     <label for="maxToolSteps" style="margin-top: 10px;">Max tool steps per message</label>
     <input type="number" id="maxToolSteps" min="1" max="200" />

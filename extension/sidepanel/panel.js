@@ -10,6 +10,7 @@ const DEFAULTS = {
   visionEnabled: false,
   maxToolSteps: 30,
   contextTokens: 32768,
+  flushOnNavigate: true,
 };
 
 let settings = { ...DEFAULTS };
@@ -358,6 +359,52 @@ function contextBudgetChars() {
   return (Number(settings.contextTokens) || 32768) * 3;
 }
 
+// Tool results from page_snapshot / read_page are stale the moment a newer
+// one exists — refs regenerate on every snapshot, so old ones actively
+// mislead. Collapse them immediately rather than waiting for budget pressure.
+const staleSnapshotIds = new Set();
+
+function supersedeOldSnapshots() {
+  for (const m of messages) {
+    if (m.role === 'tool' && staleSnapshotIds.has(m.tool_call_id) && typeof m.content === 'string' && m.content.length > 200) {
+      m.content = '[superseded by a newer page_snapshot/read_page — any refs from this result are stale]';
+    }
+  }
+}
+
+// On real navigation, compact the whole tool history into a short action log:
+// the model keeps WHAT it did (answer consistency) without dead page data.
+function flushToolHistory(msgs, newUrl) {
+  const kept = [];
+  const log = [];
+  for (const m of msgs) {
+    if (m.role === 'assistant' && m.tool_calls?.length) {
+      if (m.content) log.push(`note: ${String(m.content).slice(0, 200)}`);
+      for (const tc of m.tool_calls) {
+        log.push(`${tc.function.name} ${(tc.function.arguments || '').slice(0, 120)}`);
+      }
+    } else if (m.role === 'tool') {
+      if (typeof m.content === 'string' && m.content.startsWith('Error:')) {
+        log.push(`  -> ${m.content.slice(0, 120)}`);
+      }
+    } else if (m.role === 'user' && Array.isArray(m.content)) {
+      // drop old screenshots
+    } else {
+      kept.push(m); // user text, prior flush logs, assistant answers
+    }
+  }
+  if (log.length) {
+    kept.push({
+      role: 'user',
+      content:
+        `(context flush — the page navigated to ${newUrl}. Actions completed before the flush:\n` +
+        log.map((l) => `- ${l}`).join('\n') +
+        '\nAll old refs and snapshots are gone. Take a fresh page_snapshot and continue the task.)',
+    });
+  }
+  return kept;
+}
+
 // Reasoning models (Qwen3, DeepSeek-R1, ...) return their chain of thought in
 // reasoning_content / reasoning, or inline <think> tags — sometimes with an
 // empty final answer. Separate the two so we never show a blank turn, and
@@ -381,6 +428,12 @@ async function chatTurn() {
   const system = { role: 'system', content: await buildSystemPrompt() };
   const callCounts = new Map(); // "tool:args" -> times called this turn
   const maxSteps = Number(settings.maxToolSteps) || 30;
+  let turnUrl = null;
+  try {
+    turnUrl = (await browserCommand('get_url')).url;
+  } catch {
+    /* no active tab */
+  }
 
   for (let i = 0; i < maxSteps; i++) {
     const body = { model: settings.model, messages: [system, ...pruneForContext(messages, contextBudgetChars())] };
@@ -421,6 +474,10 @@ async function chatTurn() {
           continue;
         }
         const result = await runTool(tc);
+        if (tc.function.name === 'page_snapshot' || tc.function.name === 'read_page') {
+          supersedeOldSnapshots();
+          staleSnapshotIds.add(tc.id);
+        }
         messages.push({ role: 'tool', tool_call_id: tc.id, content: result.text.slice(0, MAX_TOOL_RESULT_CHARS) });
         if (result.imageDataUrl) {
           // Only the newest screenshot stays in history — older ones are
@@ -437,6 +494,19 @@ async function chatTurn() {
               { type: 'image_url', image_url: { url: result.imageDataUrl } },
             ],
           });
+        }
+      }
+      // Page navigated? Compact the tool history into an action log.
+      if (settings.flushOnNavigate !== false) {
+        try {
+          const cur = await browserCommand('get_url');
+          if (turnUrl && cur.url !== turnUrl) {
+            messages = flushToolHistory(messages, cur.url);
+            saveChat();
+          }
+          turnUrl = cur.url;
+        } catch {
+          /* tab gone or restricted — skip flush this round */
         }
       }
       if (looping) return finishWithoutTools(system);
