@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ember Browser Agent</title>
+  <link rel="stylesheet" href="panel.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="flame">◆</span>
+      <span>Ember</span>
+      <span id="model-name" class="model"></span>
+    </div>
+    <div class="header-actions">
+      <span id="bridge-dot" class="dot" title="MCP bridge status"></span>
+      <button id="clear-btn" title="New conversation">⟲</button>
+      <button id="settings-btn" title="Settings">⚙</button>
+    </div>
+  </header>
+
+  <main id="messages">
+    <div class="empty-state" id="empty-state">
+      <p><strong>Chat with your local LLM about this page.</strong></p>
+      <p>It can read the page, click, type, scroll, and take screenshots.</p>
+      <p class="hint">Configure your LLM endpoint in <a href="#" id="open-settings-link">Settings</a>.</p>
+    </div>
+  </main>
+
+  <footer>
+    <div class="composer">
+      <textarea id="input" rows="2" placeholder="Ask about this page, or tell me what to do…"></textarea>
+      <div class="composer-actions">
+        <button id="attach-btn" title="Attach a screenshot of the current page">📷</button>
+        <button id="send-btn" title="Send">➤</button>
+      </div>
+    </div>
+    <div id="attach-indicator" class="attach-indicator hidden">📷 screenshot attached <button id="detach-btn">✕</button></div>
+  </footer>
+
+  <script src="panel.js"></script>
+</body>
+</html>

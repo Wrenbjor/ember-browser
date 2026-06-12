@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Ember Browser Agent",
+  "version": "0.1.0",
+  "description": "Local browser agent: MCP bridge for external AIs (Claude Code, Gemini, etc.) plus a side-panel chat connected to your own local LLM.",
+  "permissions": ["tabs", "activeTab", "scripting", "storage", "sidePanel", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Ember Browser Agent"
+  },
+  "side_panel": {
+    "default_path": "sidepanel/panel.html"
+  },
+  "options_page": "options/options.html",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

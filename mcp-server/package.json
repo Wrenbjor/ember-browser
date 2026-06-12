@@ -1,0 +1,18 @@
+{
+  "name": "ember-browser-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that controls your real browser through the Ember Browser Agent extension",
+  "type": "module",
+  "main": "server.js",
+  "bin": {
+    "ember-browser-mcp": "./server.js"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "ws": "^8.18.0",
+    "zod": "^3.24.0"
+  }
+}

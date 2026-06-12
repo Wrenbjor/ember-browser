@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Ember Browser Agent — Settings</title>
+  <style>
+    :root {
+      --bg: #1a1714; --surface: #242019; --surface-2: #2e2921; --border: #3a342a;
+      --text: #ece5da; --text-dim: #9a9183; --accent: #e8743b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 14px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+      display: flex; justify-content: center; padding: 40px 16px;
+    }
+    .card { width: 100%; max-width: 560px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 28px; }
+    h1 { font-size: 18px; margin: 0 0 4px; }
+    h1 span { color: var(--accent); }
+    .sub { color: var(--text-dim); font-size: 13px; margin-bottom: 24px; }
+    h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); margin: 28px 0 12px; }
+    label { display: block; font-size: 13px; margin-bottom: 4px; color: var(--text-dim); }
+    input[type="text"], input[type="password"], input[type="number"] {
+      width: 100%; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+      color: var(--text); padding: 8px 10px; font: inherit; outline: none; margin-bottom: 14px;
+    }
+    input:focus { border-color: var(--accent); }
+    .row { display: flex; gap: 10px; align-items: center; }
+    .check { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; cursor: pointer; }
+    .check input { accent-color: var(--accent); }
+    .check small { color: var(--text-dim); }
+    button {
+      background: var(--accent); color: #fff; border: none; border-radius: 8px;
+      padding: 9px 18px; font: inherit; cursor: pointer;
+    }
+    button.secondary { background: var(--surface-2); border: 1px solid var(--border); color: var(--text); }
+    button:hover { filter: brightness(1.1); }
+    #status { margin-left: 12px; font-size: 13px; }
+    #status.ok { color: #5dba6f; }
+    #status.err { color: #d76a6a; }
+    .presets { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+    .presets button { font-size: 12px; padding: 4px 10px; }
+    .note { font-size: 12px; color: var(--text-dim); margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1><span>◆</span> Ember Browser Agent</h1>
+    <div class="sub">Settings for the side-panel assistant (Mode 2) and the MCP bridge (Mode 1).</div>
+
+    <h2>Local LLM (chat mode)</h2>
+    <div class="presets">
+      <button class="secondary preset" data-url="http://localhost:11434/v1">Ollama</button>
+      <button class="secondary preset" data-url="http://localhost:1234/v1">LM Studio</button>
+      <button class="secondary preset" data-url="http://localhost:8000/v1">vLLM</button>
+      <button class="secondary preset" data-url="http://localhost:8080/v1">llama.cpp</button>
+    </div>
+
+    <label for="baseUrl">Base URL (OpenAI-compatible)</label>
+    <input type="text" id="baseUrl" placeholder="http://localhost:11434/v1" />
+
+    <label for="apiKey">API key (optional for most local servers)</label>
+    <input type="password" id="apiKey" placeholder="" />
+
+    <label for="model">Model</label>
+    <input type="text" id="model" list="model-list" placeholder="e.g. qwen3:14b, llama3.1:8b" />
+    <datalist id="model-list"></datalist>
+
+    <label class="check"><input type="checkbox" id="toolsEnabled" />
+      Enable tool calling <small>— model can click, type, navigate (needs a tool-capable model)</small></label>
+    <label class="check"><input type="checkbox" id="visionEnabled" />
+      Enable vision <small>— send screenshots to the model (needs a vision model)</small></label>
+
+    <h2>MCP bridge (Mode 1)</h2>
+    <label for="mcpPort">Bridge WebSocket port</label>
+    <input type="number" id="mcpPort" />
+    <div class="note">Must match the port the local <code>mcp-server</code> runs on (default 8765). Change requires restarting both.</div>
+
+    <div class="row" style="margin-top: 24px;">
+      <button id="save">Save</button>
+      <button id="test" class="secondary">Test connection</button>
+      <span id="status"></span>
+    </div>
+  </div>
+  <script src="options.js"></script>
+</body>
+</html>
