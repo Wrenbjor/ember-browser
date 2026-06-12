@@ -127,10 +127,12 @@
     return parts.join(' ');
   }
 
-  function buildSnapshot() {
+  function buildSnapshot(refPrefix = '') {
     refMap = new Map();
     refCounter = 0;
-    const lines = [`Page: ${document.title}`, `URL: ${location.href}`, ''];
+    const lines = refPrefix
+      ? [] // iframe snapshots get their header from the background aggregator
+      : [`Page: ${document.title}`, `URL: ${location.href}`, ''];
 
     const headings = document.querySelectorAll('h1, h2, h3');
     if (headings.length) {
@@ -155,7 +157,7 @@
         truncated = true;
         break;
       }
-      const ref = `e${++refCounter}`;
+      const ref = `${refPrefix}e${++refCounter}`;
       refMap.set(ref, el);
       lines.push(describe(el, ref));
     }
@@ -335,7 +337,7 @@
     (async () => {
       switch (msg.name) {
         case 'snapshot':
-          return { snapshot: buildSnapshot() };
+          return { snapshot: buildSnapshot(msg.args?.refPrefix || ''), count: refCounter };
         case 'read_page':
           return readPage();
         case 'click':

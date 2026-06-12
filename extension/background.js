@@ -99,19 +99,47 @@ function assertScriptable(tab) {
   }
 }
 
-async function sendToContent(tabId, name, args) {
+async function sendToContent(tabId, name, args, frameId = 0) {
   const message = { __agent: true, name, args };
+  const options = { frameId };
   let res;
   try {
-    res = await chrome.tabs.sendMessage(tabId, message);
+    res = await chrome.tabs.sendMessage(tabId, message, options);
   } catch {
     // Content script not present (page loaded before install, etc.) — inject and retry.
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
-    res = await chrome.tabs.sendMessage(tabId, message);
+    await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, files: ['content.js'] });
+    res = await chrome.tabs.sendMessage(tabId, message, options);
   }
   if (!res) throw new Error('No response from page');
   if (!res.ok) throw new Error(res.error || 'Page action failed');
   return res.data;
+}
+
+// Survey sites and many web apps render the real content inside cross-origin
+// iframes — enumerate every frame we can reach so snapshots and actions see
+// inside them. Refs from non-top frames are prefixed (f123_e4) and routed back
+// to their frame automatically.
+const MAX_FRAMES = 12;
+
+async function listFrames(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => location.href,
+    });
+    const frames = results
+      .filter((r) => r.frameId != null)
+      .map((r) => ({ frameId: r.frameId, url: r.result }));
+    frames.sort((a, b) => a.frameId - b.frameId); // top frame (0) first
+    return frames.length ? frames : [{ frameId: 0, url: null }];
+  } catch {
+    return [{ frameId: 0, url: null }];
+  }
+}
+
+function frameIdForRef(ref) {
+  const m = /^f(\d+)_/.exec(ref || '');
+  return m ? Number(m[1]) : 0;
 }
 
 function waitForLoad(tabId, timeoutMs = 20000) {
@@ -248,9 +276,56 @@ async function handleCommand(name, args) {
       return { waited: seconds };
     }
 
-    // Everything else runs inside the page via the content script.
-    case 'snapshot':
-    case 'read_page':
+    case 'snapshot': {
+      const tab = await getActiveTab();
+      assertScriptable(tab);
+      const frames = await listFrames(tab.id);
+      const parts = [];
+      let total = 0;
+      for (const f of frames.slice(0, MAX_FRAMES)) {
+        const prefix = f.frameId === 0 ? '' : `f${f.frameId}_`;
+        try {
+          const { snapshot, count } = await sendToContent(tab.id, 'snapshot', { refPrefix: prefix }, f.frameId);
+          if (f.frameId === 0) {
+            parts.unshift(snapshot);
+            total += count;
+          } else if (count > 0) {
+            parts.push(`--- iframe (${f.url || 'embedded frame'}) — refs prefixed "${prefix}", use them exactly like top-frame refs ---\n${snapshot}`);
+            total += count;
+          }
+        } catch {
+          /* frame not reachable (sandboxed, navigating, etc.) */
+        }
+      }
+      if (total === 0) {
+        parts.push('No interactive elements found in any frame. The content may still be loading — try browser_wait then snapshot again.');
+      }
+      return { snapshot: parts.join('\n\n'), count: total };
+    }
+
+    case 'read_page': {
+      const tab = await getActiveTab();
+      assertScriptable(tab);
+      const frames = await listFrames(tab.id);
+      let main = null;
+      const extras = [];
+      for (const f of frames.slice(0, MAX_FRAMES)) {
+        try {
+          const data = await sendToContent(tab.id, 'read_page', {}, f.frameId);
+          if (f.frameId === 0) main = data;
+          else if (data.text && data.text.trim().length > 40) {
+            extras.push(`--- iframe content (${data.url}) ---\n${data.text}`);
+          }
+        } catch {
+          /* frame not reachable */
+        }
+      }
+      if (!main) main = { title: tab.title, url: tab.url, text: '' };
+      if (extras.length) main.text = `${main.text}\n\n${extras.join('\n\n')}`.slice(0, 60000);
+      return main;
+    }
+
+    // Page actions: refs carry their frame (f123_e4); everything else hits the top frame.
     case 'click':
     case 'hover':
     case 'type':
@@ -258,7 +333,7 @@ async function handleCommand(name, args) {
     case 'scroll': {
       const tab = await getActiveTab();
       assertScriptable(tab);
-      return await sendToContent(tab.id, name, args);
+      return await sendToContent(tab.id, name, args, frameIdForRef(args?.ref));
     }
 
     case 'bridge_status':
