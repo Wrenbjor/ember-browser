@@ -12,8 +12,30 @@ const DEFAULTS = {
 
 let settings = { ...DEFAULTS };
 let messages = []; // OpenAI-format conversation (system prompt injected at send time)
+let transcript = []; // what's rendered on screen: {kind, text}
 let pendingScreenshot = null;
 let busy = false;
+
+// Chat survives panel/extension reloads for the life of the browser session.
+function saveChat() {
+  chrome.storage.session.set({ chat: { messages, transcript } }).catch(() => {});
+}
+
+async function restoreChat() {
+  try {
+    const { chat } = await chrome.storage.session.get('chat');
+    if (!chat?.transcript?.length) return;
+    messages = chat.messages || [];
+    transcript = chat.transcript;
+    document.getElementById('empty-state')?.remove();
+    for (const item of transcript) {
+      if (item.kind === 'toolline') renderToolLine(item.text);
+      else renderBubble(item.kind, item.text);
+    }
+  } catch {
+    /* storage unavailable — start fresh */
+  }
+}
 
 const $ = (id) => document.getElementById(id);
 const messagesEl = $('messages');
@@ -144,7 +166,7 @@ function renderMarkdownLite(text) {
   return html;
 }
 
-function addBubble(role, text) {
+function renderBubble(role, text) {
   $('empty-state')?.remove();
   const div = document.createElement('div');
   div.className = `msg ${role}`;
@@ -154,14 +176,27 @@ function addBubble(role, text) {
   return div;
 }
 
-function addToolLine(name, args) {
+function addBubble(role, text) {
+  transcript.push({ kind: role, text });
+  saveChat();
+  return renderBubble(role, text);
+}
+
+function renderToolLine(text) {
   $('empty-state')?.remove();
   const div = document.createElement('div');
   div.className = 'tool-line';
-  const argStr = JSON.stringify(args || {});
-  div.textContent = `⚙ ${name} ${argStr === '{}' ? '' : argStr.slice(0, 120)}`;
+  div.textContent = text;
   messagesEl.appendChild(div);
   messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function addToolLine(name, args) {
+  const argStr = JSON.stringify(args || {});
+  const line = `⚙ ${name} ${argStr === '{}' ? '' : argStr.slice(0, 120)}`;
+  transcript.push({ kind: 'toolline', text: line });
+  saveChat();
+  renderToolLine(line);
 }
 
 function setThinking(on) {
@@ -245,6 +280,21 @@ async function runTool(toolCall) {
 const MAX_TOOL_ITERATIONS = 12;
 const MAX_TOOL_RESULT_CHARS = 30000;
 
+// Reasoning models (Qwen3, DeepSeek-R1, ...) return their chain of thought in
+// reasoning_content / reasoning, or inline <think> tags — sometimes with an
+// empty final answer. Separate the two so we never show a blank turn, and
+// never resend bulky thinking text back to the model.
+function extractContent(msg) {
+  let content = typeof msg.content === 'string' ? msg.content : '';
+  let reasoning = msg.reasoning_content || msg.reasoning || '';
+  if (content.includes('<think>')) {
+    const inline = content.match(/<think>([\s\S]*?)(<\/think>|$)/);
+    if (inline) reasoning = reasoning || inline[1].trim();
+    content = content.replace(/<think>[\s\S]*?(<\/think>|$)/g, '');
+  }
+  return { content: content.trim(), reasoning: String(reasoning).trim() };
+}
+
 async function chatTurn() {
   const system = { role: 'system', content: await buildSystemPrompt() };
   const callCounts = new Map(); // "tool:args" -> times called this turn
@@ -262,12 +312,14 @@ async function chatTurn() {
     } finally {
       setThinking(false);
     }
-    // Some strict servers reject null content on resend.
-    messages.push({ ...msg, content: msg.content ?? '' });
+    const { content, reasoning } = extractContent(msg);
+    // Store only the clean answer: strict servers reject null content, and
+    // resending <think> blocks burns context for nothing.
+    messages.push({ ...msg, content, reasoning_content: undefined, reasoning: undefined });
 
     if (msg.tool_calls?.length) {
       // Show interim commentary the model produced alongside its tool calls.
-      if (msg.content) addBubble('assistant', msg.content);
+      if (content) addBubble('assistant', content);
 
       let looping = false;
       for (const tc of msg.tool_calls) {
@@ -300,7 +352,17 @@ async function chatTurn() {
       if (looping) return finishWithoutTools(system);
       continue;
     }
-    if (msg.content) addBubble('assistant', msg.content);
+    if (content) {
+      addBubble('assistant', content);
+    } else if (reasoning) {
+      // The model thought but never answered (usually a context-length or
+      // max-tokens limit on the server). Show the tail of its reasoning so
+      // the turn isn't lost.
+      addBubble('assistant', `*(the model ran out of room mid-thought — its last reasoning below)*\n\n${reasoning.slice(-1200)}`);
+      addBubble('error', 'Tip: this usually means the server\'s context window or max output tokens is too small. For Ollama, set OLLAMA_CONTEXT_LENGTH=32768 (or set num_ctx on the model). For LM Studio, raise the context length when loading the model.');
+    } else {
+      addBubble('error', 'The model returned an empty response. Check the server logs — this is usually a context-length limit or a template issue with tool calling.');
+    }
     return;
   }
   // Iteration cap reached: force a final text answer instead of erroring.
@@ -320,8 +382,9 @@ async function finishWithoutTools(system) {
   } finally {
     setThinking(false);
   }
-  messages.push({ ...msg, content: msg.content ?? '' });
-  addBubble('assistant', msg.content || '(no response)');
+  const { content, reasoning } = extractContent(msg);
+  messages.push({ ...msg, content, reasoning_content: undefined, reasoning: undefined });
+  addBubble('assistant', content || (reasoning ? `*(reasoning only)*\n\n${reasoning.slice(-1200)}` : '(no response)'));
 }
 
 async function send() {
@@ -366,6 +429,7 @@ async function send() {
   } finally {
     busy = false;
     sendBtn.disabled = false;
+    saveChat();
     inputEl.focus();
   }
 }
@@ -407,6 +471,8 @@ inputEl.addEventListener('keydown', (e) => {
 
 $('clear-btn').addEventListener('click', () => {
   messages = [];
+  transcript = [];
+  chrome.storage.session.remove('chat').catch(() => {});
   messagesEl.innerHTML = '';
   addBubble('assistant', 'New conversation started.');
 });
@@ -435,5 +501,6 @@ async function refreshBridgeDot() {
 }
 
 loadSettings();
+restoreChat();
 refreshBridgeDot();
 setInterval(refreshBridgeDot, 5000);
