@@ -239,23 +239,43 @@ async function buildSystemPrompt() {
 async function callLLM(body) {
   const headers = { 'Content-Type': 'application/json' };
   if (settings.apiKey) headers.Authorization = `Bearer ${settings.apiKey}`;
-  const res = await fetch(`${settings.baseUrl.replace(/\/$/, '')}/chat/completions`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`LLM error ${res.status}: ${text.slice(0, 400)}`);
+  const url = `${settings.baseUrl.replace(/\/$/, '')}/chat/completions`;
+
+  // One retry on transient failures (network blip, engine restarting after a
+  // crash). A crashed vLLM EngineCore often recovers within a few seconds.
+  let lastErr;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 4000));
+    let res;
+    try {
+      res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+    } catch (e) {
+      lastErr = new Error(`Cannot reach the LLM server at ${url} — is it running? (${e.message})`);
+      continue;
+    }
+    if (res.status >= 500) {
+      const t = await res.text().catch(() => '');
+      lastErr = new Error(
+        `LLM server crashed (HTTP ${res.status}). This is a server-side fault — check your vLLM logs for the stack trace. ` +
+          `Common causes: vision enabled while running a text-only model (a screenshot in context will crash the engine), ` +
+          `a tool-call parser that doesn't match the model, or out-of-memory. Server said: ${t.slice(0, 200)}`
+      );
+      continue; // retry once
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`LLM error ${res.status}: ${text.slice(0, 400)}`);
+    }
+    const data = await res.json();
+    const choice = data.choices?.[0];
+    const msg = choice?.message;
+    if (!msg) throw new Error('LLM returned no message');
+    // finish_reason "length" means the server actually truncated; "stop" (or a
+    // tool-call reason) means the model finished on its own.
+    msg.__finishReason = choice.finish_reason || 'stop';
+    return msg;
   }
-  const data = await res.json();
-  const choice = data.choices?.[0];
-  const msg = choice?.message;
-  if (!msg) throw new Error('LLM returned no message');
-  // finish_reason "length" means the server actually truncated; "stop" (or a
-  // tool-call reason) means the model finished on its own.
-  msg.__finishReason = choice.finish_reason || 'stop';
-  return msg;
+  throw lastErr;
 }
 
 async function runTool(toolCall) {
