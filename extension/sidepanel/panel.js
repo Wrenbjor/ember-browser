@@ -424,6 +424,65 @@ function extractContent(msg) {
   return { content: content.trim(), reasoning: String(reasoning).trim() };
 }
 
+// When the server's tool-call parser doesn't match the model (e.g. a Qwen
+// parser left set while running Nemotron/Llama), structured tool_calls never
+// arrive — the model's call leaks into content as text. Recover the common
+// formats so tool use works regardless of server parser config.
+const toolNames = new Set(TOOLS.map((t) => t.name));
+let inlineParserWarned = false;
+
+function coerceCall(name, rawArgs) {
+  if (!name || !toolNames.has(name)) return null;
+  let args = rawArgs;
+  if (args != null && typeof args !== 'string') args = JSON.stringify(args);
+  return { id: `inline_${Math.floor(performance.now())}_${name}`, type: 'function', function: { name, arguments: args || '{}' } };
+}
+
+function recoverInlineToolCalls(content) {
+  if (!content) return [];
+  const found = [];
+  const tryPush = (n, a) => { const c = coerceCall(n, a); if (c) found.push(c); };
+
+  // <TOOLCALL>[ {...} ]</TOOLCALL> or <tool_call>{...}</tool_call> (Nemotron, Hermes, Qwen)
+  for (const m of content.matchAll(/<\s*(?:tool_?call|TOOLCALL)\s*>([\s\S]*?)<\s*\/\s*(?:tool_?call|TOOLCALL)\s*>/gi)) {
+    parseJsonCalls(m[1], tryPush);
+  }
+  // Llama 3.1 functools: <function=name>{...}</function>  or  <function=name>{...}
+  for (const m of content.matchAll(/<function\s*=\s*([\w-]+)\s*>([\s\S]*?)(?:<\/function>|$)/gi)) {
+    tryPush(m[1], m[2].trim());
+  }
+  // Python-ish: name({...})  — only for our known tool names
+  if (!found.length) {
+    for (const m of content.matchAll(/\b([a-z_]+)\s*\(\s*(\{[\s\S]*?\})\s*\)/g)) {
+      if (toolNames.has(m[1])) tryPush(m[1], m[2]);
+    }
+  }
+  // Bare JSON object/array that is the whole message: {"name":...,"arguments":...}
+  if (!found.length) {
+    const trimmed = content.trim();
+    if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && trimmed.length < 4000) {
+      parseJsonCalls(trimmed, tryPush);
+    }
+  }
+  return found;
+}
+
+function parseJsonCalls(text, push) {
+  let obj;
+  try {
+    obj = JSON.parse(text.trim());
+  } catch {
+    return;
+  }
+  const arr = Array.isArray(obj) ? obj : [obj];
+  for (const o of arr) {
+    if (!o || typeof o !== 'object') continue;
+    const name = o.name || o.tool || o.function?.name;
+    const a = o.arguments ?? o.parameters ?? o.args ?? o.function?.arguments;
+    push(name, a);
+  }
+}
+
 // Repeating these with identical args is normal (scrolling through a long
 // page, pressing ArrowDown) — exempt from loop cutoff.
 const LOOP_EXEMPT_TOOLS = new Set(['scroll', 'press_key']);
@@ -452,17 +511,40 @@ async function chatTurn() {
     } finally {
       setThinking(false);
     }
-    const { content, reasoning } = extractContent(msg);
+    let { content, reasoning } = extractContent(msg);
+
+    // Server parser missed the tool calls? Recover them from the text.
+    let toolCalls = msg.tool_calls;
+    if (settings.toolsEnabled && !toolCalls?.length) {
+      const recovered = recoverInlineToolCalls(content);
+      if (recovered.length) {
+        toolCalls = recovered;
+        content = ''; // the "content" was just the tool-call markup
+        if (!inlineParserWarned) {
+          inlineParserWarned = true;
+          addBubble('error', 'Heads-up: your model emitted tool calls as text and the server did not parse them — Ember recovered them client-side. For reliability, set your server\'s tool-call parser to match this model (see console). This message shows once per session.');
+          console.warn(
+            '[Ember] Recovered tool calls from text. Your OpenAI server is not parsing this model\'s tool-call format.\n' +
+              'vLLM: start with --enable-auto-tool-choice and a --tool-call-parser matching the model:\n' +
+              '  • Llama / Nemotron (Llama-based): llama3_json\n' +
+              '  • Qwen: qwen3_coder (or hermes)\n' +
+              '  • Mistral: mistral\n' +
+              'You likely still have qwen3_coder set from the previous model.'
+          );
+        }
+      }
+    }
+
     // Store only the clean answer: strict servers reject null content, and
     // resending <think> blocks burns context for nothing.
-    messages.push({ ...msg, content, reasoning_content: undefined, reasoning: undefined });
+    messages.push({ ...msg, content, tool_calls: toolCalls, reasoning_content: undefined, reasoning: undefined });
 
-    if (msg.tool_calls?.length) {
+    if (toolCalls?.length) {
       // Show interim commentary the model produced alongside its tool calls.
       if (content) addBubble('assistant', content);
 
       let looping = false;
-      for (const tc of msg.tool_calls) {
+      for (const tc of toolCalls) {
         const sig = `${tc.function.name}:${tc.function.arguments || ''}`;
         const count = LOOP_EXEMPT_TOOLS.has(tc.function.name) ? 0 : (callCounts.get(sig) || 0) + 1;
         callCounts.set(sig, count);
