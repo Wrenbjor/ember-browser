@@ -74,8 +74,8 @@
       Auto-flush stale page data <small>— compacts old tool calls after navigation, collapses superseded snapshots</small></label>
 
     <label for="maxToolSteps" style="margin-top: 10px;">Max tool steps per message</label>
-    <input type="number" id="maxToolSteps" min="1" max="200" />
-    <div class="note" style="margin: -8px 0 14px;">How many actions the model may take before being forced to answer. Raise for long unsupervised automations.</div>
+    <input type="number" id="maxToolSteps" min="0" max="2000" placeholder="0 = unlimited" />
+    <div class="note" style="margin: -8px 0 14px;">How many actions the model may take before being forced to answer. <strong>0 = unlimited</strong> (good for long unsupervised automations on local models). A repeated-identical-call detector still stops genuine loops.</div>
 
     <label for="contextTokens">Model context window (tokens)</label>
     <input type="number" id="contextTokens" min="2048" />

@@ -8,7 +8,7 @@ const DEFAULTS = {
   model: '',
   toolsEnabled: true,
   visionEnabled: false,
-  maxToolSteps: 30,
+  maxToolSteps: 0, // 0 = unlimited (local models have no per-call cost)
   contextTokens: 32768,
   flushOnNavigate: true,
 };
@@ -507,10 +507,17 @@ function parseJsonCalls(text, push) {
 // page, pressing ArrowDown) — exempt from loop cutoff.
 const LOOP_EXEMPT_TOOLS = new Set(['scroll', 'press_key']);
 
+// 0 (or blank) in settings = unlimited tool steps. This high ceiling is only a
+// runaway backstop so a broken model can't hang the panel forever; the
+// loop-detector below is the real guard against spinning.
+const UNLIMITED_STEP_BACKSTOP = 1000;
+
 async function chatTurn() {
   const system = { role: 'system', content: await buildSystemPrompt() };
   const callCounts = new Map(); // "tool:args" -> times called this turn
-  const maxSteps = Number(settings.maxToolSteps) || 30;
+  const configured = Number(settings.maxToolSteps);
+  const unlimited = !configured || configured <= 0;
+  const maxSteps = unlimited ? UNLIMITED_STEP_BACKSTOP : configured;
   let turnUrl = null;
   try {
     turnUrl = (await browserCommand('get_url')).url;
