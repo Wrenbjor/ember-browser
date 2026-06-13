@@ -73,18 +73,61 @@
     'select',
     'textarea',
     'summary',
+    'label', // survey radio/checkbox options are very often clickable <label>s
     '[role="button"]',
     '[role="link"]',
     '[role="checkbox"]',
     '[role="radio"]',
+    '[role="radiogroup"] *',
+    '[role="listbox"] *',
+    '[role="menu"] *',
     '[role="tab"]',
     '[role="menuitem"]',
+    '[role="menuitemradio"]',
+    '[role="menuitemcheckbox"]',
     '[role="combobox"]',
     '[role="switch"]',
     '[role="option"]',
+    '[role="treeitem"]',
     '[contenteditable="true"]',
     '[onclick]',
+    '[tabindex]:not([tabindex="-1"])', // custom widgets make themselves focusable
+    'li[class*="option" i]',
+    'li[class*="item" i]',
+    '[class*="option" i][class*="select" i]',
+    '[class*="dropdown" i] li',
+    '[class*="answer" i]',
+    '[class*="choice" i]',
   ].join(', ');
+
+  // Custom framework widgets (React/Vue dropdowns, survey choices) often have
+  // none of the above — just a click handler attached via addEventListener and
+  // cursor:pointer styling. Catch those leaf-ish clickables as a fallback so
+  // dynamically-rendered options become selectable refs instead of guesswork.
+  function collectPointerClickables(seen, out) {
+    let budget = 2500; // cap getComputedStyle calls on large pages
+    for (const el of document.body ? document.body.querySelectorAll('*') : []) {
+      if (budget <= 0) break;
+      if (seen.has(el)) continue;
+      // Target leaf-ish nodes: skip big containers (they're rarely the option).
+      if (el.childElementCount > 4) continue;
+      const text = (el.textContent || '').trim();
+      if (!text || text.length > 60) continue;
+      budget--;
+      if (getComputedStyle(el).cursor !== 'pointer') continue;
+      if (!isVisible(el)) continue;
+      // Skip if an ancestor we already captured is the real control.
+      let p = el.parentElement;
+      let nested = false;
+      while (p) {
+        if (seen.has(p)) { nested = true; break; }
+        p = p.parentElement;
+      }
+      if (nested) continue;
+      out.push(el);
+      seen.add(el);
+    }
+  }
 
   function isVisible(el) {
     const rect = el.getBoundingClientRect();
@@ -149,11 +192,18 @@
 
     lines.push('Interactive elements (use ref ids to click/type):');
     const seen = new Set();
-    let truncated = false;
+    const ordered = [];
     for (const el of document.querySelectorAll(INTERACTIVE_SELECTOR)) {
       if (seen.has(el) || !isVisible(el)) continue;
       seen.add(el);
-      if (refCounter >= 400) {
+      ordered.push(el);
+    }
+    // Fallback pass for framework widgets with no semantic markup.
+    collectPointerClickables(seen, ordered);
+
+    let truncated = false;
+    for (const el of ordered) {
+      if (refCounter >= 500) {
         truncated = true;
         break;
       }
@@ -161,7 +211,7 @@
       refMap.set(ref, el);
       lines.push(describe(el, ref));
     }
-    if (truncated) lines.push('... (truncated at 400 elements)');
+    if (truncated) lines.push('... (truncated at 500 elements)');
     return lines.join('\n');
   }
 
