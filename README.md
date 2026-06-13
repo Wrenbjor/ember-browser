@@ -28,13 +28,21 @@ Clicking the extension icon opens the side panel.
 ### 2. Mode 2 — local LLM chat
 
 1. Open the extension's **Settings** (⚙ in the side panel, or right-click icon → Options)
-2. Pick a preset (Ollama / LM Studio / vLLM / llama.cpp) or enter any OpenAI-compatible base URL
-3. Click **Test connection** to verify and list available models
-4. Enter your model name and **Save**
+2. Pick a preset (Ollama / LM Studio / vLLM / llama.cpp) or enter any OpenAI-compatible base URL — a single model server **or** a router/proxy like LiteLLM that fronts several models
+3. Click **Test connection** to verify and list available models (empty role slots are auto-filled by guessing from model ids)
+4. Fill the model role slots and **Save**
+
+**Model roles** (all share one base URL — ideal with a LiteLLM-style router):
+- **Large model** — primary reasoning and tool calling (e.g. `nemotron-super-49b`).
+- **Small model** — optional, faster model you can make primary for simple turns (e.g. `gpt-oss-20b`).
+- **Vision model** — image-bearing requests route here **automatically** (e.g. `qwen3-vl-30b`). This keeps screenshots away from text-only models, which otherwise crash on image input. The side panel shows a `↗ model:` line whenever routing switches.
+- **Primary text model** — choose whether Large or Small drives the chat.
+
+Only one model is required; leave the others blank to run single-model.
 
 Options:
-- **Tool calling** — lets the model click/type/navigate. Needs a tool-capable model (e.g. `qwen3`, `llama3.1`, `mistral-small`). If your model doesn't support tools, turn this off — page text is then included automatically with each message.
-- **Vision** — sends screenshots to the model. Needs a vision model (e.g. `qwen2.5-vl`, `llama3.2-vision`, `gemma3`).
+- **Tool calling** — lets the model click/type/navigate. Needs a tool-capable model. If your model doesn't support tools, turn this off — page text is then included automatically with each message.
+- **Vision** — enables screenshots; they're sent to the Vision model above. Needs a vision-capable model.
 
 > Ollama note: run `OLLAMA_ORIGINS="*" ollama serve` if you get CORS/403 errors.
 

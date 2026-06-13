@@ -62,14 +62,27 @@
     <label for="apiKey">API key (optional for most local servers)</label>
     <input type="password" id="apiKey" placeholder="" />
 
-    <label for="model">Model</label>
-    <input type="text" id="model" list="model-list" placeholder="e.g. qwen3:14b, llama3.1:8b" />
     <datalist id="model-list"></datalist>
+
+    <label for="modelLarge">Large model <small style="color:var(--text-dim)">— primary reasoning &amp; tool calling</small></label>
+    <input type="text" id="modelLarge" list="model-list" placeholder="e.g. nemotron-super-49b" />
+
+    <label for="modelSmall">Small model <small style="color:var(--text-dim)">— optional, faster for simple turns</small></label>
+    <input type="text" id="modelSmall" list="model-list" placeholder="e.g. gpt-oss-20b" />
+
+    <label for="modelVision">Vision model <small style="color:var(--text-dim)">— image requests route here automatically</small></label>
+    <input type="text" id="modelVision" list="model-list" placeholder="e.g. qwen3-vl-30b" />
+
+    <label for="primaryModel">Primary text model (drives the chat)</label>
+    <select id="primaryModel" style="width:100%; background:var(--surface-2); border:1px solid var(--border); border-radius:8px; color:var(--text); padding:8px 10px; font:inherit; margin-bottom:14px;">
+      <option value="large">Large model</option>
+      <option value="small">Small model</option>
+    </select>
 
     <label class="check"><input type="checkbox" id="toolsEnabled" />
       Enable tool calling <small>— model can click, type, navigate (needs a tool-capable model)</small></label>
     <label class="check"><input type="checkbox" id="visionEnabled" />
-      Enable vision <small>— send screenshots to the model (needs a vision model)</small></label>
+      Enable vision <small>— send screenshots; routed to the vision model above</small></label>
     <label class="check"><input type="checkbox" id="flushOnNavigate" />
       Auto-flush stale page data <small>— compacts old tool calls after navigation, collapses superseded snapshots</small></label>
 

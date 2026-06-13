@@ -5,7 +5,11 @@
 const DEFAULTS = {
   baseUrl: 'http://localhost:11434/v1',
   apiKey: '',
-  model: '',
+  model: '', // legacy single-model field, migrated to modelLarge
+  modelLarge: '', // primary text/tool model
+  modelSmall: '', // optional faster text model
+  modelVision: '', // model that can see images; image requests route here
+  primaryModel: 'large', // which text model drives the chat: 'large' | 'small'
   toolsEnabled: true,
   visionEnabled: false,
   maxToolSteps: 0, // 0 = unlimited (local models have no per-call cost)
@@ -14,6 +18,28 @@ const DEFAULTS = {
 };
 
 let settings = { ...DEFAULTS };
+
+// A request carrying an image must go to the vision model; a text-only model
+// crashes on image content. Everything else uses the chosen primary text model.
+function requestHasImage(msgs) {
+  return msgs.some((m) => Array.isArray(m.content) && m.content.some((p) => p?.type === 'image_url'));
+}
+
+function primaryTextModel() {
+  const large = settings.modelLarge || settings.model;
+  const small = settings.modelSmall;
+  if (settings.primaryModel === 'small' && small) return small;
+  return large || small;
+}
+
+function pickModel(msgs) {
+  if (requestHasImage(msgs) && settings.modelVision) return settings.modelVision;
+  return primaryTextModel();
+}
+
+function anyModelConfigured() {
+  return !!(settings.modelLarge || settings.modelSmall || settings.modelVision || settings.model);
+}
 let messages = []; // OpenAI-format conversation (system prompt injected at send time)
 let transcript = []; // what's rendered on screen: {kind, text}
 let pendingScreenshot = null;
@@ -525,8 +551,15 @@ async function chatTurn() {
     /* no active tab */
   }
 
+  let lastModel = null;
   for (let i = 0; i < maxSteps; i++) {
-    const body = { model: settings.model, messages: [system, ...pruneForContext(messages, contextBudgetChars())] };
+    const sent = [system, ...pruneForContext(messages, contextBudgetChars())];
+    const model = pickModel(sent);
+    if (model !== lastModel) {
+      renderToolLine(`↗ model: ${model}${requestHasImage(sent) ? ' (vision)' : ''}`);
+      lastModel = model;
+    }
+    const body = { model, messages: sent };
     if (settings.toolsEnabled) {
       body.tools = toolDefs();
       body.tool_choice = 'auto';
@@ -655,7 +688,8 @@ async function finishWithoutTools(system) {
   setThinking(true);
   let msg;
   try {
-    msg = await callLLM({ model: settings.model, messages: [system, ...pruneForContext(messages, contextBudgetChars())] });
+    const sent = [system, ...pruneForContext(messages, contextBudgetChars())];
+    msg = await callLLM({ model: pickModel(sent), messages: sent });
   } finally {
     setThinking(false);
   }
@@ -667,8 +701,8 @@ async function finishWithoutTools(system) {
 async function send() {
   const text = inputEl.value.trim();
   if (!text || busy) return;
-  if (!settings.model) {
-    addBubble('error', 'No model configured. Open Settings (⚙) and set your endpoint and model.');
+  if (!anyModelConfigured()) {
+    addBubble('error', 'No model configured. Open Settings (⚙) and set your endpoint and at least one model.');
     return;
   }
   inputEl.value = '';
@@ -762,7 +796,11 @@ $('open-settings-link')?.addEventListener('click', (e) => {
 
 async function loadSettings() {
   settings = await chrome.storage.sync.get(DEFAULTS);
-  $('model-name').textContent = settings.model || 'no model set';
+  // Migrate a pre-router single-model config into the large slot.
+  if (!settings.modelLarge && settings.model) settings.modelLarge = settings.model;
+  const primary = primaryTextModel();
+  const vis = settings.visionEnabled && settings.modelVision ? ` +vision:${settings.modelVision}` : '';
+  $('model-name').textContent = primary ? `${primary}${vis}` : 'no model set';
 }
 
 chrome.storage.onChanged.addListener(loadSettings);
